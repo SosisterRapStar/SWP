@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 )
@@ -20,15 +22,23 @@ type Executor interface {
 }
 
 type Worker struct {
+	isFree      atomic.Bool
 	workerId    uuid.UUID
 	tasksStream <-chan Task
 	infoStream  chan<- string
-	stop        <-chan struct{}
 }
 
 type Task struct {
 	errorChan chan<- error
 	taskFunc  func() error
+}
+
+func (w *Worker) getState() bool {
+	return w.isFree.Load()
+}
+
+func (w *Worker) setState(newState bool) {
+	w.isFree.Store(newState)
 }
 
 func (w *Worker) Start(ctx context.Context, stop chan struct{}) {
@@ -56,6 +66,7 @@ func (w *Worker) Start(ctx context.Context, stop chan struct{}) {
 
 type WorkerPool struct {
 	// canAcceptTasks atomic.Bool // заменить на sync.Once
+	sync.Mutex
 	tasksChan     chan Task
 	innerPool     []*controllUnit
 	size          int // размер пула (кол-во воркеров)
@@ -104,6 +115,7 @@ func (wp *WorkerPool) Open() {
 	// 	return errors.New("can not open worker pool")
 	// }
 	// wp.setAcceptAbility(false)
+
 	for i := 0; i < wp.size; i++ {
 		stopChannel := make(chan struct{})
 		worker := &Worker{
@@ -115,6 +127,7 @@ func (wp *WorkerPool) Open() {
 			worker:   worker,
 			stopChan: stopChannel,
 		}
+		worker.setState(true)
 		worker.Start(wp.ctx, stopChannel)
 	}
 	// wp.setAcceptAbility(true)
@@ -127,6 +140,28 @@ func (wp *WorkerPool) Close(ctx context.Context) error {
 }
 
 func (wp *WorkerPool) startTask() {
+
+}
+
+func (wp *WorkerPool) AddWorker() {
+
+	stopChan := make(chan struct{})
+	newW := &Worker{
+		workerId:    uuid.New(),
+		tasksStream: wp.tasksChan,
+		infoStream:  wp.infoStream,
+	}
+	wp.Lock()
+	wp.innerPool = append(wp.innerPool, &controllUnit{
+		worker:   newW,
+		stopChan: stopChan,
+	})
+	wp.size++
+	wp.Unlock()
+	newW.Start(wp.ctx, stopChan)
+}
+
+func (wp *WorkerPool) DeleteWorker() {
 
 }
 
