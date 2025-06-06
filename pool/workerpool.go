@@ -2,10 +2,18 @@ package pool
 
 import (
 	"context"
-	"sync/atomic"
+	"fmt"
+	"io"
 
 	"github.com/google/uuid"
 )
+
+const infoBufferChannelSize = 100
+
+type controllUnit struct {
+	worker   *Worker
+	stopChan chan<- struct{}
+}
 
 type Executor interface {
 	Start()
@@ -13,49 +21,104 @@ type Executor interface {
 
 type Worker struct {
 	workerId    uuid.UUID
-	tasksStream chan<- WorkerTask
-	stopChan    chan<- struct{}
-	errorChan   <-chan error
+	tasksStream <-chan Task
+	infoStream  chan<- string
+	stop        <-chan struct{}
 }
 
-type WorkerTask struct {
+type Task struct {
 	errorChan chan<- error
 	taskFunc  func() error
 }
 
-// func (w *Worker) Start() {
-// 	for {
-// 		select {
-// 		case task :=<-w.tasksStream:
-// 			if err := task.
-// 		}
-// 	}
-// }
+func (w *Worker) Start(ctx context.Context, stop chan struct{}) {
+	for {
+		select {
+		case task := <-w.tasksStream:
+			w.infoStream <- fmt.Sprintf("Worker %v: started the job", w.workerId)
+			if err := task.taskFunc(); err != nil {
+				w.infoStream <- fmt.Sprintf("Worker %v: job was executed with error", w.workerId)
+				task.errorChan <- err
+			} else {
+				w.infoStream <- fmt.Sprintf("Worker %v: job done", w.workerId)
+			}
+			close(task.errorChan)
+
+		case <-stop:
+			w.infoStream <- fmt.Sprintf("Worker %v closed", w.workerId)
+			return
+		case <-ctx.Done():
+			w.infoStream <- fmt.Sprintf("Worker %v closed", w.workerId)
+			return
+		}
+	}
+}
 
 type WorkerPool struct {
-	canAcceptTasks atomic.Bool
-	bareFuncStream chan func() error
-	size           int // размер пула (кол-во воркеров)
-	waitQueueSize  int // размер буфера канала
+	// canAcceptTasks atomic.Bool // заменить на sync.Once
+	tasksChan     chan Task
+	innerPool     []*controllUnit
+	size          int // размер пула (кол-во воркеров)
+	waitQueueSize int // размер буфера канала
+	infoStream    chan string
+	ctx           context.Context
+	stopCtx       context.CancelFunc
 }
 
-func (wp *WorkerPool) checkAcceptAbility() bool {
-	return wp.canAcceptTasks.Load()
+func New(size int, queueSize int) *WorkerPool {
+	ctx, cancel := context.WithCancel(context.Background())
+	pool := &WorkerPool{
+		tasksChan:     make(chan Task, queueSize),
+		innerPool:     make([]*controllUnit, size, size+10),
+		size:          size,
+		waitQueueSize: size,
+		infoStream:    make(chan string, infoBufferChannelSize),
+		ctx:           ctx,
+		stopCtx:       cancel,
+	}
+	// pool.canAcceptTasks.Store(true)
+	return pool
 }
 
-func (wp *WorkerPool) setAcceptAbility(newState bool) {
-	wp.canAcceptTasks.Store(newState)
+func (wp *WorkerPool) startInfoWriter(w io.Writer) {
+	for info := range wp.infoStream {
+		w.Write([]byte(info))
+	}
 }
+
+// func (wp *WorkerPool) checkAcceptAbility() bool {
+// 	return wp.canAcceptTasks.Load()
+// }
+
+// func (wp *WorkerPool) setAcceptAbility(newState bool) {
+// 	wp.canAcceptTasks.Store(newState)
+// }
 
 // Будем открывать пул, нужна переменная, которая будет обновляться через атомики,
 // если переменная = 1 то значит, что пул можно открыть,
 // если переменная = 0 то возвращаем ошибку, это значит, что по каким-то причинам пул нельзя открыть
 // пул нельзя открыть, если он в процессе открытия, в процессе закрытия или уже открыт
 
-func (wp *WorkerPool) Open() error {
-	wp.setAcceptAbility(false)
-	workers := make([]Worker, wp.Size)
-	return nil
+func (wp *WorkerPool) Open() {
+	// if !wp.checkAcceptAbility() {
+	// 	return errors.New("can not open worker pool")
+	// }
+	// wp.setAcceptAbility(false)
+	for i := 0; i < wp.size; i++ {
+		stopChannel := make(chan struct{})
+		worker := &Worker{
+			workerId:    uuid.New(),
+			tasksStream: wp.tasksChan,
+			infoStream:  wp.infoStream,
+		}
+		wp.innerPool[i] = &controllUnit{
+			worker:   worker,
+			stopChan: stopChannel,
+		}
+		worker.Start(wp.ctx, stopChannel)
+	}
+	// wp.setAcceptAbility(true)
+	// return nil
 }
 
 // будем использовать, чтобы закрыть все каналы и остановить все горутины
@@ -67,10 +130,6 @@ func (wp *WorkerPool) startTask() {
 
 }
 
-func (wp *WorkerPool) Execute(ctx context.Context, task func() error) error {
-
-}
-
-func New() {
+func (wp *WorkerPool) Execute(ctx context.Context, task func() error) (<-chan error, error) {
 
 }
