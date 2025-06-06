@@ -19,10 +19,6 @@ var (
 	defaultInitSize          uint32 = 10
 )
 
-type Executor interface {
-	Start()
-}
-
 type Worker struct {
 	isActive    atomic.Bool
 	ID          uuid.UUID
@@ -165,6 +161,7 @@ func (wp *WorkerPool) Open() {
 
 // будем использовать, чтобы закрыть все каналы и остановить все горутины
 func (wp *WorkerPool) Close(ctx context.Context) error {
+	close(wp.stopChan)
 	wp.wg.Wait()
 	return nil
 }
@@ -204,6 +201,7 @@ func (wp *WorkerPool) DeleteWorker() {
 		return
 	}
 	wp.stopedWorkers = append(wp.stopedWorkers, stopedWorkerId)
+	wp.innerPool[stopedWorkerId].setState(false)
 }
 
 func (wp *WorkerPool) Execute(job func() error) (<-chan error, error) {
