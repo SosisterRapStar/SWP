@@ -4,26 +4,20 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"sync"
 	"sync/atomic"
 
 	"github.com/google/uuid"
 )
 
-const infoBufferChannelSize = 100
-const defaultIdleWorkersNumber = 10
-const defaultWaitQueueSize = 10
+const infoBufferChannelSize = 20
 
-type WorkerPoolConfig struct {
-	MaxIdleWorkers *int
-	InitialSize    *int
-	WaitQueueSize  *int
-}
-
-type controllUnit struct {
-	worker   *Worker
-	stopChan chan<- struct{}
-}
+var (
+	defaultIdleWorkersNumber uint8  = 10
+	defaultWaitQueueSize     uint8  = 10
+	defaultInitSize          uint32 = 10
+)
 
 type Executor interface {
 	Start()
@@ -34,6 +28,9 @@ type Worker struct {
 	ID          uuid.UUID
 	tasksStream <-chan Task
 	infoStream  chan<- string
+	stop        <-chan struct{}
+	idChan      chan<- uuid.UUID
+	wg          *sync.WaitGroup
 }
 
 type Task struct {
@@ -49,7 +46,8 @@ func (w *Worker) setState(newState bool) {
 	w.isActive.Store(newState)
 }
 
-func (w *Worker) Start(ctx context.Context, stop chan struct{}) {
+func (w *Worker) Start() {
+	defer w.wg.Done()
 	for {
 		select {
 		case task := <-w.tasksStream:
@@ -62,11 +60,13 @@ func (w *Worker) Start(ctx context.Context, stop chan struct{}) {
 			}
 			close(task.errorChan)
 
-		case <-stop:
-			w.infoStream <- fmt.Sprintf("Worker %v closed", w.ID)
-			return
-		case <-ctx.Done():
-			w.infoStream <- fmt.Sprintf("Worker %v closed", w.ID)
+		case _, ok := <-w.stop:
+			if !ok {
+				w.infoStream <- fmt.Sprintf("Worker %v closed by worker pool closing", w.ID)
+				return
+			}
+			w.infoStream <- fmt.Sprintf("Worker %v closed by deleting worker", w.ID)
+			w.idChan <- w.ID
 			return
 		}
 	}
@@ -77,80 +77,90 @@ type WorkerPool struct {
 	wg             *sync.WaitGroup
 	mx             *sync.Mutex
 	tasksChan      chan Task
-	innerPool      map[uuid.UUID]*controllUnit
-	WaitQueueSize  int // размер буфера канала
+	innerPool      map[uuid.UUID]*Worker
+	WaitQueueSize  uint8 // размер буфера канала
 	infoStream     chan string
 	ctx            context.Context
 	stopCtx        context.CancelFunc
 	stopedWorkers  []uuid.UUID
-	MaxIdleWorkers int
+	MaxIdleWorkers uint8
+	infoWriter     io.Writer
+	idChan         chan uuid.UUID
+	stopChan       chan struct{}
 }
 
-func New(initSize int, queueSize int) *WorkerPool {
+type WorkerPoolConfig struct {
+	MaxIdleWorkers *uint8
+	InitialSize    *uint32
+	WaitQueueSize  *uint8
+	InfoWriter     io.Writer
+}
+
+func New(c WorkerPoolConfig) *WorkerPool {
+	if c.MaxIdleWorkers == nil {
+		c.MaxIdleWorkers = &defaultIdleWorkersNumber
+	}
+	if c.InitialSize == nil {
+		c.InitialSize = &defaultInitSize
+	}
+	if c.WaitQueueSize == nil {
+		c.WaitQueueSize = &defaultWaitQueueSize
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	pool := &WorkerPool{
 		wg:             &sync.WaitGroup{},
 		mx:             &sync.Mutex{},
-		tasksChan:      make(chan Task, queueSize),
-		innerPool:      make(map[uuid.UUID]*controllUnit, initSize),
-		WaitQueueSize:  queueSize,
-		infoStream:     make(chan string, infoBufferChannelSize),
+		tasksChan:      make(chan Task, *c.WaitQueueSize),
+		innerPool:      make(map[uuid.UUID]*Worker, *c.InitialSize),
+		WaitQueueSize:  *c.WaitQueueSize,
 		ctx:            ctx,
 		stopCtx:        cancel,
-		MaxIdleWorkers: defaultIdleWorkersNumber,
-		stopedWorkers:  make([]uuid.UUID, 0, defaultIdleWorkersNumber),
+		MaxIdleWorkers: *c.MaxIdleWorkers,
+		stopedWorkers:  make([]uuid.UUID, 0, *c.MaxIdleWorkers),
+		infoWriter:     c.InfoWriter,
+		stopChan:       make(chan struct{}),
 	}
 	// pool.canAcceptTasks.Store(true)
 	return pool
 }
 
-func (wp *WorkerPool) startInfoWriter(w io.Writer) {
-	for info := range wp.infoStream {
-		w.Write([]byte(info))
-	}
-	wp.wg.Done()
+func (wp *WorkerPool) startInfoWriter() {
+	wp.wg.Add(1)
+	go func() {
+		defer wp.wg.Done()
+		for info := range wp.infoStream {
+			_, err := wp.infoWriter.Write([]byte(info))
+			if err != nil {
+				log.Fatal("пусть пока так будет")
+			}
+		}
+	}()
 }
 
 func (wp *WorkerPool) Size() int {
 	return len(wp.innerPool)
 }
 
-// func (wp *WorkerPool) checkAcceptAbility() bool {
-// 	return wp.canAcceptTasks.Load()
-// }
-
-// func (wp *WorkerPool) setAcceptAbility(newState bool) {
-// 	wp.canAcceptTasks.Store(newState)
-// }
-
-// Будем открывать пул, нужна переменная, которая будет обновляться через атомики,
-// если переменная = 1 то значит, что пул можно открыть,
-// если переменная = 0 то возвращаем ошибку, это значит, что по каким-то причинам пул нельзя открыть
-// пул нельзя открыть, если он в процессе открытия, в процессе закрытия или уже открыт
-
 func (wp *WorkerPool) Open() {
-	// if !wp.checkAcceptAbility() {
-	// 	return errors.New("can not open worker pool")
-	// }
-	// wp.setAcceptAbility(false)
-	go wp.startInfoWriter()
+	if wp.infoWriter != nil {
+		wp.infoStream = make(chan string, infoBufferChannelSize)
+		wp.startInfoWriter()
+	}
 	for i := 0; i < len(wp.innerPool); i++ {
-		stopChannel := make(chan struct{})
 		worker := &Worker{
 			ID:          uuid.New(),
 			tasksStream: wp.tasksChan,
 			infoStream:  wp.infoStream,
+			idChan:      wp.idChan,
+			stop:        wp.stopChan,
 		}
-		wp.innerPool[worker.ID] =
-			&controllUnit{
-				worker:   worker,
-				stopChan: stopChannel,
-			}
+		wp.innerPool[worker.ID] = worker
 		worker.setState(true)
-		worker.Start(wp.ctx, stopChannel)
+		wp.wg.Add(1)
+		worker.Start()
 	}
-	// wp.setAcceptAbility(true)
-	// return nil
+
 }
 
 // будем использовать, чтобы закрыть все каналы и остановить все горутины
@@ -161,34 +171,39 @@ func (wp *WorkerPool) Close(ctx context.Context) error {
 
 func (wp *WorkerPool) AddWorker() {
 
-	stopChan := make(chan struct{})
 	newW := &Worker{
 		ID:          uuid.New(),
 		tasksStream: wp.tasksChan,
 		infoStream:  wp.infoStream,
+		idChan:      wp.idChan,
+		stop:        wp.stopChan,
 	}
 	wp.mx.Lock()
 	if len(wp.stopedWorkers) != 0 {
 		idleWorkerID := wp.stopedWorkers[len(wp.stopedWorkers)-1]
 		wp.stopedWorkers = wp.stopedWorkers[:len(wp.stopedWorkers)-1]
-		newStopChannel := make(chan struct{})
-		controlUnit := wp.innerPool[idleWorkerID]
-		controlUnit.stopChan = newStopChannel
+		idleWorker := wp.innerPool[idleWorkerID]
 		wp.mx.Unlock()
-		controlUnit.worker.Start(wp.ctx, newStopChannel)
+		idleWorker.Start()
 		return
 	}
-	wp.innerPool[newW.ID] =
-		&controllUnit{
-			worker:   newW,
-			stopChan: stopChan,
-		}
+	wp.innerPool[newW.ID] = newW
 	wp.mx.Unlock()
-	newW.Start(wp.ctx, stopChan)
+	newW.Start()
 }
 
 func (wp *WorkerPool) DeleteWorker() {
-
+	go func() {
+		wp.stopChan <- struct{}{}
+	}()
+	stopedWorkerId := <-wp.idChan
+	if len(wp.stopedWorkers) == int(wp.MaxIdleWorkers) {
+		wp.mx.Lock()
+		delete(wp.innerPool, stopedWorkerId)
+		wp.mx.Unlock()
+		return
+	}
+	wp.stopedWorkers = append(wp.stopedWorkers, stopedWorkerId)
 }
 
 func (wp *WorkerPool) Execute(job func() error) (<-chan error, error) {
