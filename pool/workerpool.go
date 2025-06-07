@@ -196,7 +196,21 @@ func (wp *WorkerPool) Open() {
 // Close all goroutines which was added
 func (wp *WorkerPool) Close(ctx context.Context) error {
 	close(wp.stopChan)
-	wp.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		wp.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("error occured during pool closing: %w", ctx.Err())
+	case <-done:
+
+	}
+	if wp.infoStream != nil {
+		wp.infoStream <- "Pool was closed"
+	}
+	close(wp.tasksChan)
 	return nil
 }
 
