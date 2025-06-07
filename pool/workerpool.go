@@ -11,12 +11,12 @@ import (
 	"github.com/google/uuid"
 )
 
-const infoBufferChannelSize = 20
-
-var (
-	defaultIdleWorkersNumber uint8  = 10
-	defaultWaitQueueSize     uint8  = 10
-	defaultInitSize          uint32 = 10
+const (
+	infoBufferChannelSize              = 20
+	defaultIdleWorkersNumber           = 10
+	defaultWaitQueueSize               = 10
+	defaultInitSize                    = 10
+	defaultAdditionalSpaceForInnerPool = 15
 )
 
 var once sync.Once
@@ -33,7 +33,7 @@ type Worker struct {
 	infoStream  chan<- string
 	stop        <-chan struct{}
 	idChan      chan<- uuid.UUID
-	wg          *sync.WaitGroup
+	// wg          *sync.WaitGroup
 }
 
 type Task struct {
@@ -41,90 +41,95 @@ type Task struct {
 	taskFunc  func() error
 }
 
-func (w *Worker) getState() bool {
-	return w.isActive.Load()
-}
+// func (w *Worker) getState() bool {
+// 	return w.isActive.Load()
+// }
 
-func (w *Worker) setState(newState bool) {
-	w.isActive.Store(newState)
-}
+// func (w *Worker) setState(newState bool) {
+// 	w.isActive.Store(newState)
+// }
 
-func (w *Worker) Start() {
-	defer w.wg.Done()
-	for {
-		select {
-		case task := <-w.tasksStream:
-			w.infoStream <- fmt.Sprintf("Worker %v: started the job", w.ID)
-			if err := task.taskFunc(); err != nil {
-				w.infoStream <- fmt.Sprintf("Worker %v: job was executed with error", w.ID)
-				task.errorChan <- err
-			} else {
-				w.infoStream <- fmt.Sprintf("Worker %v: job done", w.ID)
-			}
-			close(task.errorChan)
+func (w *Worker) Start(wg *sync.WaitGroup) {
+	go func() {
+		defer wg.Done()
+		w.isActive.Store(true)
+		for {
+			select {
+			case task := <-w.tasksStream:
+				w.infoStream <- fmt.Sprintf("Worker %v: started the job", w.ID)
+				if err := task.taskFunc(); err != nil {
+					w.infoStream <- fmt.Sprintf("Worker %v: job was executed with error", w.ID)
+					task.errorChan <- err
+				} else {
+					w.infoStream <- fmt.Sprintf("Worker %v: job done", w.ID)
+				}
+				close(task.errorChan)
 
-		case _, ok := <-w.stop:
-			if !ok {
-				w.infoStream <- fmt.Sprintf("Worker %v closed by worker pool closing", w.ID)
+			case _, ok := <-w.stop:
+				w.isActive.Store(false)
+				if !ok {
+					w.infoStream <- fmt.Sprintf("Worker %v closed by worker pool closing", w.ID)
+					return
+				}
+				w.infoStream <- fmt.Sprintf("Worker %v closed by deleting worker", w.ID)
+				w.idChan <- w.ID
 				return
 			}
-			w.infoStream <- fmt.Sprintf("Worker %v closed by deleting worker", w.ID)
-			w.idChan <- w.ID
-			return
 		}
-	}
+	}()
 }
 
 type WorkerPool struct {
-	// canAcceptTasks atomic.Bool // заменить на sync.Once
 	wg             *sync.WaitGroup
 	mx             *sync.RWMutex
 	tasksChan      chan Task
 	innerPool      map[uuid.UUID]*Worker
-	WaitQueueSize  uint8 // размер буфера канала
+	WaitQueueSize  int // размер буфера канала
 	infoStream     chan string
 	ctx            context.Context
 	stopCtx        context.CancelFunc
+	size           int
 	stopedWorkers  []uuid.UUID
-	MaxIdleWorkers uint8
+	MaxIdleWorkers int
 	infoWriter     io.Writer
 	idChan         chan uuid.UUID
 	stopChan       chan struct{}
 }
 
 type WorkerPoolConfig struct {
-	MaxIdleWorkers *uint8
-	InitialSize    *uint32
-	WaitQueueSize  *uint8
+	MaxIdleWorkers int
+	InitialSize    int
+	WaitQueueSize  int
 	InfoWriter     io.Writer
 }
 
 func New(c WorkerPoolConfig) *WorkerPool {
-	if c.MaxIdleWorkers == nil {
-		c.MaxIdleWorkers = &defaultIdleWorkersNumber
-	}
-	if c.InitialSize == nil {
-		c.InitialSize = &defaultInitSize
-	}
-	if c.WaitQueueSize == nil {
-		c.WaitQueueSize = &defaultWaitQueueSize
-	}
+	// if c.MaxIdleWorkers == nil {
+	// 	c.MaxIdleWorkers = defaultIdleWorkersNumber
+	// }
+	// if c.InitialSize == nil {
+	// 	c.InitialSize = defaultInitSize
+	// }
+	// if c.WaitQueueSize == nil {
+	// 	c.WaitQueueSize = defaultWaitQueueSize
+	// }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	pool := &WorkerPool{
 		wg:             &sync.WaitGroup{},
 		mx:             &sync.RWMutex{},
-		tasksChan:      make(chan Task, *c.WaitQueueSize),
-		innerPool:      make(map[uuid.UUID]*Worker, *c.InitialSize),
-		WaitQueueSize:  *c.WaitQueueSize,
+		tasksChan:      make(chan Task, c.WaitQueueSize),
+		innerPool:      make(map[uuid.UUID]*Worker, c.InitialSize+defaultAdditionalSpaceForInnerPool),
+		WaitQueueSize:  c.WaitQueueSize,
 		ctx:            ctx,
 		stopCtx:        cancel,
-		MaxIdleWorkers: *c.MaxIdleWorkers,
-		stopedWorkers:  make([]uuid.UUID, 0, *c.MaxIdleWorkers),
+		MaxIdleWorkers: c.MaxIdleWorkers,
+		stopedWorkers:  make([]uuid.UUID, 0, c.MaxIdleWorkers),
 		infoWriter:     c.InfoWriter,
 		stopChan:       make(chan struct{}),
+		idChan:         make(chan uuid.UUID),
+		size:           c.InitialSize,
 	}
-	// pool.canAcceptTasks.Store(true)
 	return pool
 }
 
@@ -160,9 +165,9 @@ func (wp *WorkerPool) Open() {
 				stop:        wp.stopChan,
 			}
 			wp.innerPool[worker.ID] = worker
-			worker.setState(true)
+			worker.isActive.Store(true)
 			wp.wg.Add(1)
-			worker.Start()
+			worker.Start(wp.wg)
 		}
 	})
 
@@ -202,11 +207,11 @@ func (wp *WorkerPool) AddWorkers(number int) {
 			stop:        wp.stopChan})
 	}
 	for _, id := range reusedId {
-		wp.innerPool[id].Start()
+		wp.innerPool[id].Start(wp.wg)
 	}
 	for _, wk := range newWorkers {
 		wp.innerPool[wk.ID] = wk
-		wk.Start()
+		wk.Start(wp.wg)
 	}
 	wp.mx.Unlock()
 }
@@ -225,7 +230,6 @@ func (wp *WorkerPool) DeleteWorker() {
 		return
 	}
 	wp.stopedWorkers = append(wp.stopedWorkers, stopedWorkerId)
-	wp.innerPool[stopedWorkerId].setState(false)
 }
 
 func (wp *WorkerPool) Execute(job func() error) (<-chan error, error) {
@@ -242,7 +246,7 @@ func (wp *WorkerPool) GetWorkersInfo() []WorkerInfo {
 	info := make([]WorkerInfo, 0, wp.Size())
 	wp.mx.RLock()
 	for _, wk := range wp.innerPool {
-		info = append(info, WorkerInfo{ID: wk.ID, Active: wk.getState()})
+		info = append(info, WorkerInfo{ID: wk.ID, Active: wk.isActive.Load()})
 	}
 	wp.mx.Unlock()
 	return info
