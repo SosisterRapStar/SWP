@@ -21,6 +21,11 @@ var (
 
 var once sync.Once
 
+type WorkerInfo struct {
+	ID     uuid.UUID `json:"ID"`
+	Active bool      `json:"Active"`
+}
+
 type Worker struct {
 	isActive    atomic.Bool
 	ID          uuid.UUID
@@ -73,7 +78,7 @@ func (w *Worker) Start() {
 type WorkerPool struct {
 	// canAcceptTasks atomic.Bool // заменить на sync.Once
 	wg             *sync.WaitGroup
-	mx             *sync.Mutex
+	mx             *sync.RWMutex
 	tasksChan      chan Task
 	innerPool      map[uuid.UUID]*Worker
 	WaitQueueSize  uint8 // размер буфера канала
@@ -108,7 +113,7 @@ func New(c WorkerPoolConfig) *WorkerPool {
 	ctx, cancel := context.WithCancel(context.Background())
 	pool := &WorkerPool{
 		wg:             &sync.WaitGroup{},
-		mx:             &sync.Mutex{},
+		mx:             &sync.RWMutex{},
 		tasksChan:      make(chan Task, *c.WaitQueueSize),
 		innerPool:      make(map[uuid.UUID]*Worker, *c.InitialSize),
 		WaitQueueSize:  *c.WaitQueueSize,
@@ -137,7 +142,7 @@ func (wp *WorkerPool) startInfoWriter() {
 }
 
 func (wp *WorkerPool) Size() int {
-	return len(wp.innerPool)
+	return len(wp.innerPool) - len(wp.stopedWorkers)
 }
 
 func (wp *WorkerPool) Open() {
@@ -231,4 +236,14 @@ func (wp *WorkerPool) Execute(job func() error) (<-chan error, error) {
 	}
 	wp.tasksChan <- *task
 	return errorChan, nil
+}
+
+func (wp *WorkerPool) GetWorkersInfo() []WorkerInfo {
+	info := make([]WorkerInfo, 0, wp.Size())
+	wp.mx.RLock()
+	for _, wk := range wp.innerPool {
+		info = append(info, WorkerInfo{ID: wk.ID, Active: wk.getState()})
+	}
+	wp.mx.Unlock()
+	return info
 }
