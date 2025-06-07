@@ -27,12 +27,14 @@ type WorkerInfo struct {
 }
 
 type Worker struct {
-	isActive    atomic.Bool
-	ID          uuid.UUID
-	tasksStream <-chan Task
+	isActive atomic.Bool
+
+	ID uuid.UUID
+
 	infoStream  chan<- string
 	stop        <-chan struct{}
 	idChan      chan<- uuid.UUID
+	tasksStream <-chan Task
 	// wg          *sync.WaitGroup
 }
 
@@ -49,6 +51,7 @@ type Task struct {
 // 	w.isActive.Store(newState)
 // }
 
+// Worker
 func (w *Worker) Start(wg *sync.WaitGroup) {
 	go func() {
 		defer wg.Done()
@@ -56,22 +59,24 @@ func (w *Worker) Start(wg *sync.WaitGroup) {
 		for {
 			select {
 			case task := <-w.tasksStream:
-				w.infoStream <- fmt.Sprintf("Worker %v: started the job", w.ID)
+				if w.infoStream != nil {
+					w.sendMessage(fmt.Sprintf("Worker %v: started the job", w.ID))
+				}
 				if err := task.taskFunc(); err != nil {
-					w.infoStream <- fmt.Sprintf("Worker %v: job was executed with error", w.ID)
+					w.sendMessage(fmt.Sprintf("Worker %v: job was executed with error", w.ID))
 					task.errorChan <- err
 				} else {
-					w.infoStream <- fmt.Sprintf("Worker %v: job done", w.ID)
+					w.sendMessage(fmt.Sprintf("Worker %v: job done", w.ID))
 				}
 				close(task.errorChan)
 
 			case _, ok := <-w.stop:
 				w.isActive.Store(false)
 				if !ok {
-					w.infoStream <- fmt.Sprintf("Worker %v closed by worker pool closing", w.ID)
+					w.sendMessage(fmt.Sprintf("Worker %v closed by worker pool closing", w.ID))
 					return
 				}
-				w.infoStream <- fmt.Sprintf("Worker %v closed by deleting worker", w.ID)
+				w.sendMessage(fmt.Sprintf("Worker %v closed by deleting worker", w.ID))
 				w.idChan <- w.ID
 				return
 			}
@@ -79,28 +84,39 @@ func (w *Worker) Start(wg *sync.WaitGroup) {
 	}()
 }
 
+func (w *Worker) sendMessage(message string) {
+	if w.infoStream != nil {
+		w.infoStream <- message
+	}
+}
+
 type WorkerPool struct {
-	wg             *sync.WaitGroup
-	mx             *sync.RWMutex
-	tasksChan      chan Task
-	innerPool      map[uuid.UUID]*Worker
+	wg *sync.WaitGroup
+	mx *sync.RWMutex
+
+	innerPool     map[uuid.UUID]*Worker
+	stopedWorkers []uuid.UUID
+
 	WaitQueueSize  int // размер буфера канала
-	infoStream     chan string
-	ctx            context.Context
-	stopCtx        context.CancelFunc
 	size           int
-	stopedWorkers  []uuid.UUID
 	MaxIdleWorkers int
-	infoWriter     io.Writer
-	idChan         chan uuid.UUID
-	stopChan       chan struct{}
+
+	ctx        context.Context
+	tasksChan  chan Task
+	infoStream chan string
+	idChan     chan uuid.UUID // this chan is used to send concrete worker id which was stoped by poo
+	stopChan   chan struct{}
+
+	infoWriter io.Writer
+	stopCtx    context.CancelFunc
 }
 
 type WorkerPoolConfig struct {
 	MaxIdleWorkers int
 	InitialSize    int
 	WaitQueueSize  int
-	InfoWriter     io.Writer
+
+	InfoWriter io.Writer
 }
 
 func New(c WorkerPoolConfig) *WorkerPool {
@@ -116,23 +132,27 @@ func New(c WorkerPoolConfig) *WorkerPool {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	pool := &WorkerPool{
-		wg:             &sync.WaitGroup{},
-		mx:             &sync.RWMutex{},
-		tasksChan:      make(chan Task, c.WaitQueueSize),
-		innerPool:      make(map[uuid.UUID]*Worker, c.InitialSize+defaultAdditionalSpaceForInnerPool),
-		WaitQueueSize:  c.WaitQueueSize,
-		ctx:            ctx,
-		stopCtx:        cancel,
+		wg: &sync.WaitGroup{},
+		mx: &sync.RWMutex{},
+
+		tasksChan:     make(chan Task, c.WaitQueueSize),
+		innerPool:     make(map[uuid.UUID]*Worker, c.InitialSize+defaultAdditionalSpaceForInnerPool),
+		idChan:        make(chan uuid.UUID),
+		stopedWorkers: make([]uuid.UUID, 0, c.MaxIdleWorkers),
+		stopChan:      make(chan struct{}),
+
 		MaxIdleWorkers: c.MaxIdleWorkers,
-		stopedWorkers:  make([]uuid.UUID, 0, c.MaxIdleWorkers),
+		WaitQueueSize:  c.WaitQueueSize,
 		infoWriter:     c.InfoWriter,
-		stopChan:       make(chan struct{}),
-		idChan:         make(chan uuid.UUID),
 		size:           c.InitialSize,
+
+		ctx:     ctx,
+		stopCtx: cancel,
 	}
 	return pool
 }
 
+// Starts background goroutine which can write info to any stream
 func (wp *WorkerPool) startInfoWriter() {
 	wp.wg.Add(1)
 	go func() {
@@ -156,7 +176,7 @@ func (wp *WorkerPool) Open() {
 			wp.infoStream = make(chan string, infoBufferChannelSize)
 			wp.startInfoWriter()
 		}
-		for i := 0; i < len(wp.innerPool); i++ {
+		for i := 0; i < wp.size; i++ {
 			worker := &Worker{
 				ID:          uuid.New(),
 				tasksStream: wp.tasksChan,
