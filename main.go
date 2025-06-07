@@ -1,25 +1,47 @@
 package main
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"os"
+	"time"
 
-func some(done chan struct{}) {
+	"github.com/SosisterRapStar/SWP/pool"
+	"github.com/google/uuid"
+)
+
+func testTask() error {
+	taskId := uuid.New()
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop() // Важно: освобождаем ресурсы тикера
+
+	timeout := time.After(5 * time.Second)
+
 	for {
 		select {
-		case done <- struct{}{}:
-			fmt.Println("chan")
-			return
-		default:
-			fmt.Println("default")
+		case <-ticker.C:
+			fmt.Printf("Tick: %v\n", taskId)
+		case <-timeout:
+			fmt.Printf("Stopped: %v\n", taskId)
+			return nil
 		}
 	}
 }
 
 func main() {
-	done := make(chan struct{})
-	go func() {
-		fmt.Print("started to listen")
-		<-done
-	}()
+	// writer := bufio.NewWriter(bufio.NewWriter())
+	// defer writer.Flush()
+	pool := pool.New(pool.WorkerPoolConfig{
+		MaxIdleWorkers: 10,
+		InitialSize:    10,
+		WaitQueueSize:  10,
+		InfoWriter:     os.Stderr})
+	pool.Open()
+	ctx, closeTimeOut := context.WithTimeout(context.Background(), 10*time.Second)
+	defer closeTimeOut()
+	if _, err := pool.Execute(testTask, ctx); err != nil {
+		fmt.Println(err)
+	}
 
-	some(done)
+	time.Sleep(10 * time.Second)
 }

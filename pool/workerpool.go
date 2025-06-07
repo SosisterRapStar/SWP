@@ -8,6 +8,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -32,10 +33,10 @@ type Worker struct {
 
 	ID uuid.UUID
 
-	infoStream  chan<- string
-	stop        <-chan struct{}
-	idChan      chan<- uuid.UUID
-	tasksStream <-chan Task
+	infoStream chan<- string
+	stop       <-chan struct{}
+	idChan     chan<- uuid.UUID
+	tasks      <-chan Task
 	// wg          *sync.WaitGroup
 }
 
@@ -57,27 +58,28 @@ func (w *Worker) Start(wg *sync.WaitGroup) {
 	go func() {
 		defer wg.Done()
 		w.isActive.Store(true)
+		w.sendMessage(fmt.Sprintf("Worker %v: started to listen for tasks\n", w.ID))
 		for {
 			select {
-			case task := <-w.tasksStream:
+			case task := <-w.tasks:
 				if w.infoStream != nil {
-					w.sendMessage(fmt.Sprintf("Worker %v: started the job", w.ID))
+					w.sendMessage(fmt.Sprintf("Worker %v: started the job\n", w.ID))
 				}
 				if err := task.taskFunc(); err != nil {
-					w.sendMessage(fmt.Sprintf("Worker %v: job was executed with error", w.ID))
+					w.sendMessage(fmt.Sprintf("Worker %v: job was executed with error\n", w.ID))
 					task.errorChan <- err
 				} else {
-					w.sendMessage(fmt.Sprintf("Worker %v: job done", w.ID))
+					w.sendMessage(fmt.Sprintf("Worker %v: job done\n", w.ID))
 				}
 				close(task.errorChan)
 
 			case _, ok := <-w.stop:
 				w.isActive.Store(false)
 				if !ok {
-					w.sendMessage(fmt.Sprintf("Worker %v closed by worker pool closing", w.ID))
+					w.sendMessage(fmt.Sprintf("Worker %v closed by worker pool closingn\n", w.ID))
 					return
 				}
-				w.sendMessage(fmt.Sprintf("Worker %v closed by deleting worker", w.ID))
+				w.sendMessage(fmt.Sprintf("Worker %v closed by deleting workern\n", w.ID))
 				w.idChan <- w.ID
 				return
 			}
@@ -174,25 +176,24 @@ func (wp *WorkerPool) Size() int {
 }
 
 func (wp *WorkerPool) Open() {
-	once.Do(func() {
-		if wp.infoWriter != nil {
-			wp.infoStream = make(chan string, infoBufferChannelSize)
-			wp.startInfoWriter()
+	if wp.infoWriter != nil {
+		wp.infoStream = make(chan string, infoBufferChannelSize)
+		wp.startInfoWriter()
+	}
+	for i := 0; i < wp.size; i++ {
+		worker := &Worker{
+			ID:         uuid.New(),
+			tasks:      wp.tasksChan,
+			infoStream: wp.infoStream,
+			idChan:     wp.idChan,
+			stop:       wp.stopChan,
 		}
-		for i := 0; i < wp.size; i++ {
-			worker := &Worker{
-				ID:          uuid.New(),
-				tasksStream: wp.tasksChan,
-				infoStream:  wp.infoStream,
-				idChan:      wp.idChan,
-				stop:        wp.stopChan,
-			}
-			wp.innerPool[worker.ID] = worker
-			worker.isActive.Store(true)
-			wp.wg.Add(1)
-			worker.Start(wp.wg)
-		}
-	})
+		wp.innerPool[worker.ID] = worker
+		worker.isActive.Store(true)
+		wp.wg.Add(1)
+		worker.Start(wp.wg)
+	}
+	log.Println("Workerpool started")
 
 }
 
@@ -244,11 +245,11 @@ func (wp *WorkerPool) AddWorkers(number int) {
 	var worker *Worker
 	for i := 0; i < number; i++ {
 		worker = &Worker{
-			ID:          uuid.New(),
-			tasksStream: wp.tasksChan,
-			infoStream:  wp.infoStream,
-			idChan:      wp.idChan,
-			stop:        wp.stopChan}
+			ID:         uuid.New(),
+			tasks:      wp.tasksChan,
+			infoStream: wp.infoStream,
+			idChan:     wp.idChan,
+			stop:       wp.stopChan}
 		wp.innerPool[worker.ID] = worker
 		worker.Start(wp.wg)
 	}
@@ -275,18 +276,29 @@ func (wp *WorkerPool) DeleteWorker(ctx context.Context) error {
 	}
 }
 
-func (wp *WorkerPool) Execute(job func() error) (<-chan error, error) {
-	if _, ok := <-wp.stopChan; !ok {
-		return nil, errors.New("pool is closed")
-	}
+func (wp *WorkerPool) Execute(job func() error, ctx context.Context) (<-chan error, error) {
+	// log.Println("execute was started")
+	// if _, ok := <-wp.stopChan; !ok {
+	// 	// log.Println("error")
+	// 	return nil, errors.New("pool is closed")
+	// }
+	// log.Println("execute was started")
 	errorChan := make(chan error)
-	select {
-	case wp.tasksChan <- Task{taskFunc: job, errorChan: errorChan}:
-		return errorChan, nil
-	default:
-		close(errorChan)
-		return nil, errors.New("can not execute task because all workers are busy")
+	// log.Println("execute was started")
+	for {
+		select {
+		case wp.tasksChan <- Task{taskFunc: job, errorChan: errorChan}:
+			log.Println("task was sent")
+			return errorChan, nil
+		case <-ctx.Done():
+			close(errorChan)
+			return nil, errors.New("can not execute task because all workers are busy")
+		default:
+			log.Println("Wait")
+			time.Sleep(5 * time.Second)
+		}
 	}
+
 }
 
 func (wp *WorkerPool) GetWorkersInfo() []WorkerInfo {
