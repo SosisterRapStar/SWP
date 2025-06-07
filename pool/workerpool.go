@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -120,6 +121,8 @@ type WorkerPoolConfig struct {
 }
 
 func New(c WorkerPoolConfig) *WorkerPool {
+
+	// TODO: add checks
 	// if c.MaxIdleWorkers == nil {
 	// 	c.MaxIdleWorkers = defaultIdleWorkersNumber
 	// }
@@ -209,71 +212,81 @@ func (wp *WorkerPool) Close(ctx context.Context) error {
 	}
 	if wp.infoStream != nil {
 		wp.infoStream <- "Pool was closed"
+		close(wp.infoStream)
 	}
 	close(wp.tasksChan)
 	return nil
 }
 
 // Get idle worker from stoped queue
-func (wp *WorkerPool) reuseWorker(number int) []uuid.UUID {
-	reusableId := make([]uuid.UUID, 0, number)
-	for len(wp.stopedWorkers) > 0 && number > 0 {
-		number--
-		idleWorkerID := wp.stopedWorkers[len(wp.stopedWorkers)-1]
-		wp.stopedWorkers = wp.stopedWorkers[:len(wp.stopedWorkers)-1]
-		reusableId = append(reusableId, idleWorkerID)
-	}
-	return reusableId
-}
+// func (wp *WorkerPool) reuseWorker(number int) []uuid.UUID {
+// 	reusableId := make([]uuid.UUID, 0, number)
+// 	for len(wp.stopedWorkers) > 0 && number > 0 {
+// 		number--
+// 		idleWorkerID := wp.stopedWorkers[len(wp.stopedWorkers)-1]
+// 		wp.stopedWorkers = wp.stopedWorkers[:len(wp.stopedWorkers)-1]
+// 		reusableId = append(reusableId, idleWorkerID)
+// 	}
+// 	return reusableId
+// }
 
 // Adds provided number of workers to pool
+// TODO: refactor
 func (wp *WorkerPool) AddWorkers(number int) {
-	newWorkers := make([]*Worker, 0, number)
 	wp.mx.Lock()
-	reusedId := wp.reuseWorker(number)
-	number -= len(reusedId)
+	defer wp.mx.Unlock()
+	reused := wp.stopedWorkers[:min(number, len(wp.stopedWorkers))]
+	wp.stopedWorkers = wp.stopedWorkers[:len(reused)]
+	number -= len(reused)
+	for _, wrk := range reused {
+		wp.innerPool[wrk].Start(wp.wg)
+	}
+	var worker *Worker
 	for i := 0; i < number; i++ {
-		newWorkers = append(newWorkers, &Worker{
+		worker = &Worker{
 			ID:          uuid.New(),
 			tasksStream: wp.tasksChan,
 			infoStream:  wp.infoStream,
 			idChan:      wp.idChan,
-			stop:        wp.stopChan})
+			stop:        wp.stopChan}
+		wp.innerPool[worker.ID] = worker
+		worker.Start(wp.wg)
 	}
-	for _, id := range reusedId {
-		wp.innerPool[id].Start(wp.wg)
-	}
-	for _, wk := range newWorkers {
-		wp.innerPool[wk.ID] = wk
-		wk.Start(wp.wg)
-	}
-	wp.mx.Unlock()
+	wp.size += number
 }
 
-func (wp *WorkerPool) DeleteWorker() {
-	wp.wg.Add(1)
-	go func() {
-		defer wp.wg.Done()
-		wp.stopChan <- struct{}{}
-	}()
-	stopedWorkerId := <-wp.idChan
-	if len(wp.stopedWorkers) == int(wp.MaxIdleWorkers) {
-		wp.mx.Lock()
-		delete(wp.innerPool, stopedWorkerId)
-		wp.mx.Unlock()
-		return
+func (wp *WorkerPool) DeleteWorker(ctx context.Context) error {
+	for {
+		select {
+		case wp.stopChan <- struct{}{}:
+			id := <-wp.idChan
+			wp.mx.Lock()
+			if len(wp.stopedWorkers) == wp.MaxIdleWorkers {
+				delete(wp.innerPool, id)
+			} else {
+				wp.stopedWorkers = append(wp.stopedWorkers, id)
+			}
+			wp.size--
+			wp.mx.Unlock()
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("error occured during worker stop: %w", ctx.Err())
+		}
 	}
-	wp.stopedWorkers = append(wp.stopedWorkers, stopedWorkerId)
 }
 
 func (wp *WorkerPool) Execute(job func() error) (<-chan error, error) {
-	errorChan := make(chan error)
-	task := &Task{
-		taskFunc:  job,
-		errorChan: errorChan,
+	if _, ok := <-wp.stopChan; !ok {
+		return nil, errors.New("pool is closed")
 	}
-	wp.tasksChan <- *task
-	return errorChan, nil
+	errorChan := make(chan error)
+	select {
+	case wp.tasksChan <- Task{taskFunc: job, errorChan: errorChan}:
+		return errorChan, nil
+	default:
+		close(errorChan)
+		return nil, errors.New("can not execute task because all workers are busy")
+	}
 }
 
 func (wp *WorkerPool) GetWorkersInfo() []WorkerInfo {
