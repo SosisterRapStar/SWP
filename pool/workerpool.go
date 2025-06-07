@@ -19,6 +19,8 @@ var (
 	defaultInitSize          uint32 = 10
 )
 
+var once sync.Once
+
 type Worker struct {
 	isActive    atomic.Bool
 	ID          uuid.UUID
@@ -139,58 +141,75 @@ func (wp *WorkerPool) Size() int {
 }
 
 func (wp *WorkerPool) Open() {
-	if wp.infoWriter != nil {
-		wp.infoStream = make(chan string, infoBufferChannelSize)
-		wp.startInfoWriter()
-	}
-	for i := 0; i < len(wp.innerPool); i++ {
-		worker := &Worker{
-			ID:          uuid.New(),
-			tasksStream: wp.tasksChan,
-			infoStream:  wp.infoStream,
-			idChan:      wp.idChan,
-			stop:        wp.stopChan,
+	once.Do(func() {
+		if wp.infoWriter != nil {
+			wp.infoStream = make(chan string, infoBufferChannelSize)
+			wp.startInfoWriter()
 		}
-		wp.innerPool[worker.ID] = worker
-		worker.setState(true)
-		wp.wg.Add(1)
-		worker.Start()
-	}
+		for i := 0; i < len(wp.innerPool); i++ {
+			worker := &Worker{
+				ID:          uuid.New(),
+				tasksStream: wp.tasksChan,
+				infoStream:  wp.infoStream,
+				idChan:      wp.idChan,
+				stop:        wp.stopChan,
+			}
+			wp.innerPool[worker.ID] = worker
+			worker.setState(true)
+			wp.wg.Add(1)
+			worker.Start()
+		}
+	})
 
 }
 
-// будем использовать, чтобы закрыть все каналы и остановить все горутины
+// Close all goroutines which was added
 func (wp *WorkerPool) Close(ctx context.Context) error {
 	close(wp.stopChan)
 	wp.wg.Wait()
 	return nil
 }
 
-func (wp *WorkerPool) AddWorker() {
-
-	newW := &Worker{
-		ID:          uuid.New(),
-		tasksStream: wp.tasksChan,
-		infoStream:  wp.infoStream,
-		idChan:      wp.idChan,
-		stop:        wp.stopChan,
-	}
-	wp.mx.Lock()
-	if len(wp.stopedWorkers) != 0 {
+// Get idle worker from stoped queue
+func (wp *WorkerPool) reuseWorker(number int) []uuid.UUID {
+	reusableId := make([]uuid.UUID, 0, number)
+	for len(wp.stopedWorkers) > 0 && number > 0 {
+		number--
 		idleWorkerID := wp.stopedWorkers[len(wp.stopedWorkers)-1]
 		wp.stopedWorkers = wp.stopedWorkers[:len(wp.stopedWorkers)-1]
-		idleWorker := wp.innerPool[idleWorkerID]
-		wp.mx.Unlock()
-		idleWorker.Start()
-		return
+		reusableId = append(reusableId, idleWorkerID)
 	}
-	wp.innerPool[newW.ID] = newW
+	return reusableId
+}
+
+// Adds provided number of workers to pool
+func (wp *WorkerPool) AddWorkers(number int) {
+	newWorkers := make([]*Worker, 0, number)
+	wp.mx.Lock()
+	reusedId := wp.reuseWorker(number)
+	number -= len(reusedId)
+	for i := 0; i < number; i++ {
+		newWorkers = append(newWorkers, &Worker{
+			ID:          uuid.New(),
+			tasksStream: wp.tasksChan,
+			infoStream:  wp.infoStream,
+			idChan:      wp.idChan,
+			stop:        wp.stopChan})
+	}
+	for _, id := range reusedId {
+		wp.innerPool[id].Start()
+	}
+	for _, wk := range newWorkers {
+		wp.innerPool[wk.ID] = wk
+		wk.Start()
+	}
 	wp.mx.Unlock()
-	newW.Start()
 }
 
 func (wp *WorkerPool) DeleteWorker() {
+	wp.wg.Add(1)
 	go func() {
+		defer wp.wg.Done()
 		wp.stopChan <- struct{}{}
 	}()
 	stopedWorkerId := <-wp.idChan
