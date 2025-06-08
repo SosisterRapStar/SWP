@@ -21,7 +21,7 @@ const (
 	defaultAdditionalSpaceForInnerPool = 15
 )
 
-var once sync.Once
+// var once sync.Once
 
 type WorkerInfo struct {
 	ID     uuid.UUID `json:"ID"`
@@ -33,7 +33,7 @@ type Worker struct {
 
 	ID uuid.UUID
 
-	infoStream chan<- string
+	infoWriter io.Writer
 	stop       <-chan struct{}
 	idChan     chan<- uuid.UUID
 	tasks      <-chan Task
@@ -62,9 +62,7 @@ func (w *Worker) Start(wg *sync.WaitGroup) {
 		for {
 			select {
 			case task := <-w.tasks:
-				if w.infoStream != nil {
-					w.sendMessage(fmt.Sprintf("Worker %v: started the job\n", w.ID))
-				}
+				w.sendMessage(fmt.Sprintf("Worker %v: started the job\n", w.ID))
 				if err := task.taskFunc(); err != nil {
 					w.sendMessage(fmt.Sprintf("Worker %v: job was executed with error\n", w.ID))
 					task.errorChan <- err
@@ -88,8 +86,8 @@ func (w *Worker) Start(wg *sync.WaitGroup) {
 }
 
 func (w *Worker) sendMessage(message string) {
-	if w.infoStream != nil {
-		w.infoStream <- message
+	if w.infoWriter != nil {
+		w.infoWriter.Write([]byte(message))
 	}
 }
 
@@ -104,11 +102,10 @@ type WorkerPool struct {
 	size           int
 	MaxIdleWorkers int
 
-	ctx        context.Context
-	tasksChan  chan Task
-	infoStream chan string
-	idChan     chan uuid.UUID // this chan is used to send concrete worker id which was stoped by poo
-	stopChan   chan struct{}
+	ctx       context.Context
+	tasksChan chan Task
+	idChan    chan uuid.UUID // this chan is used to send concrete worker id which was stoped by poo
+	stopChan  chan struct{}
 
 	infoWriter io.Writer
 	stopCtx    context.CancelFunc
@@ -157,34 +154,16 @@ func New(c WorkerPoolConfig) *WorkerPool {
 	return pool
 }
 
-// Starts background goroutine which can write info to any stream
-func (wp *WorkerPool) startInfoWriter() {
-	wp.wg.Add(1)
-	go func() {
-		defer wp.wg.Done()
-		for info := range wp.infoStream {
-			_, err := wp.infoWriter.Write([]byte(info))
-			if err != nil {
-				log.Fatal("пусть пока так будет")
-			}
-		}
-	}()
-}
-
 func (wp *WorkerPool) Size() int {
 	return len(wp.innerPool) - len(wp.stopedWorkers)
 }
 
 func (wp *WorkerPool) Open() {
-	if wp.infoWriter != nil {
-		wp.infoStream = make(chan string, infoBufferChannelSize)
-		wp.startInfoWriter()
-	}
 	for i := 0; i < wp.size; i++ {
 		worker := &Worker{
 			ID:         uuid.New(),
 			tasks:      wp.tasksChan,
-			infoStream: wp.infoStream,
+			infoWriter: wp.infoWriter,
 			idChan:     wp.idChan,
 			stop:       wp.stopChan,
 		}
@@ -205,17 +184,18 @@ func (wp *WorkerPool) Close(ctx context.Context) error {
 		wp.wg.Wait()
 		close(done)
 	}()
+
 	select {
 	case <-ctx.Done():
+		// fmt.Println("pool closed ?")
 		return fmt.Errorf("error occured during pool closing: %w", ctx.Err())
 	case <-done:
-
-	}
-	if wp.infoStream != nil {
-		wp.infoStream <- "Pool was closed"
-		close(wp.infoStream)
+		// fmt.Println("pool closed ?")
 	}
 	close(wp.tasksChan)
+	if wp.infoWriter != nil {
+		wp.infoWriter.Write([]byte("Pool was closed"))
+	}
 	return nil
 }
 
@@ -247,7 +227,7 @@ func (wp *WorkerPool) AddWorkers(number int) {
 		worker = &Worker{
 			ID:         uuid.New(),
 			tasks:      wp.tasksChan,
-			infoStream: wp.infoStream,
+			infoWriter: wp.infoWriter,
 			idChan:     wp.idChan,
 			stop:       wp.stopChan}
 		wp.innerPool[worker.ID] = worker
