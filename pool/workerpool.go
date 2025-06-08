@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -11,14 +12,37 @@ import (
 )
 
 const (
-	infoBufferChannelSize              = 20
-	defaultIdleWorkersNumber           = 10
-	defaultWaitQueueSize               = 10
-	defaultInitSize                    = 10
-	defaultAdditionalSpaceForInnerPool = 15
+	InfoBufferChannelSize              = 20
+	DefaultIdleWorkersNumber           = 10
+	DefaultWaitQueueSize               = 10
+	DefaultInitSize                    = 10
+	DefaultAdditionalSpaceForInnerPool = 15
 )
 
-// var once sync.Once
+type WorkerPoolConfig struct {
+	MaxIdleWorkers int
+	InitialSize    int
+	WaitQueueSize  int
+	InfoWriter     io.Writer
+}
+
+func DefaultConfig() WorkerPoolConfig {
+	return WorkerPoolConfig{
+		MaxIdleWorkers: DefaultIdleWorkersNumber,
+		InitialSize:    DefaultInitSize,
+		WaitQueueSize:  DefaultWaitQueueSize,
+		InfoWriter:     os.Stderr,
+	}
+}
+
+// func validator(c *WorkerPoolConfig) error {
+// 	if c.MaxIdleWorkers < 0 {
+// 		return ErrorConfigValidation
+// 	}
+// 	if c.InitialSize < 0 {
+
+// 	}
+// }
 
 type WorkerPool struct {
 	wg *sync.WaitGroup
@@ -32,19 +56,12 @@ type WorkerPool struct {
 	MaxIdleWorkers int
 
 	tasksChan chan Task
-	idChan    chan uuid.UUID // this chan is used to send concrete worker id which was stoped by poo
+	idChan    chan uuid.UUID // this chan is used to send concrete worker id which was stoped by delete method
 	stopChan  chan struct{}
 
 	infoWriter io.Writer
 	openOnce   sync.Once
 	isOpened   bool
-}
-
-type WorkerPoolConfig struct {
-	MaxIdleWorkers int
-	InitialSize    int
-	WaitQueueSize  int
-	InfoWriter     io.Writer
 }
 
 func New(c WorkerPoolConfig) *WorkerPool {
@@ -65,7 +82,7 @@ func New(c WorkerPoolConfig) *WorkerPool {
 		mx: &sync.RWMutex{},
 
 		tasksChan:     make(chan Task, c.WaitQueueSize),
-		innerPool:     make(map[uuid.UUID]*Worker, c.InitialSize+defaultAdditionalSpaceForInnerPool),
+		innerPool:     make(map[uuid.UUID]*Worker, c.InitialSize+DefaultAdditionalSpaceForInnerPool),
 		idChan:        make(chan uuid.UUID),
 		stopedWorkers: make([]uuid.UUID, 0, c.MaxIdleWorkers),
 		stopChan:      make(chan struct{}),

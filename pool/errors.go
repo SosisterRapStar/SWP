@@ -7,4 +7,5 @@ var (
 	ErrorOnClosing         = errors.New("error occured closing pool")
 	ErrorAllWorkersAreBusy = errors.New("can not execute task because all workers are busy")
 	ErrorOnWorkerStop      = errors.New("error occured during worker stop")
+	ErrorConfigValidation  = errors.New("config validation error")
 )
