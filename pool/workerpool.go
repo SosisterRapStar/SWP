@@ -2,12 +2,9 @@ package pool
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,66 +20,6 @@ const (
 
 // var once sync.Once
 
-type WorkerInfo struct {
-	ID     uuid.UUID `json:"ID"`
-	Active bool      `json:"Active"`
-}
-
-type Worker struct {
-	isActive atomic.Bool
-
-	ID uuid.UUID
-
-	infoWriter io.Writer
-	stop       <-chan struct{}
-	idChan     chan<- uuid.UUID
-	tasks      <-chan Task
-	// wg          *sync.WaitGroup
-}
-
-type Task struct {
-	errorChan chan<- error
-	taskFunc  func() error
-}
-
-// Worker
-func (w *Worker) Start(wg *sync.WaitGroup) {
-	go func() {
-		defer wg.Done()
-		w.isActive.Store(true)
-		w.sendMessage(fmt.Sprintf("Worker %v: started to listen for tasks\n", w.ID))
-		for {
-			select {
-			case task := <-w.tasks:
-				w.sendMessage(fmt.Sprintf("Worker %v: started the job\n", w.ID))
-				if err := task.taskFunc(); err != nil {
-					w.sendMessage(fmt.Sprintf("Worker %v: job was executed with error\n", w.ID))
-					task.errorChan <- err
-				} else {
-					w.sendMessage(fmt.Sprintf("Worker %v: job done\n", w.ID))
-				}
-				close(task.errorChan)
-
-			case _, ok := <-w.stop:
-				w.isActive.Store(false)
-				if !ok {
-					w.sendMessage(fmt.Sprintf("Worker %v closed by worker pool\n", w.ID))
-					return
-				}
-				w.sendMessage(fmt.Sprintf("Worker %v closed by deleting worker\n", w.ID))
-				w.idChan <- w.ID
-				return
-			}
-		}
-	}()
-}
-
-func (w *Worker) sendMessage(message string) {
-	if w.infoWriter != nil {
-		w.infoWriter.Write([]byte(message))
-	}
-}
-
 type WorkerPool struct {
 	wg *sync.WaitGroup
 	mx *sync.RWMutex
@@ -94,21 +31,20 @@ type WorkerPool struct {
 	Size           int
 	MaxIdleWorkers int
 
-	ctx       context.Context
 	tasksChan chan Task
 	idChan    chan uuid.UUID // this chan is used to send concrete worker id which was stoped by poo
 	stopChan  chan struct{}
 
 	infoWriter io.Writer
-	stopCtx    context.CancelFunc
+	openOnce   sync.Once
+	isOpened   bool
 }
 
 type WorkerPoolConfig struct {
 	MaxIdleWorkers int
 	InitialSize    int
 	WaitQueueSize  int
-
-	InfoWriter io.Writer
+	InfoWriter     io.Writer
 }
 
 func New(c WorkerPoolConfig) *WorkerPool {
@@ -124,7 +60,6 @@ func New(c WorkerPoolConfig) *WorkerPool {
 	// 	c.WaitQueueSize = defaultWaitQueueSize
 	// }
 
-	ctx, cancel := context.WithCancel(context.Background())
 	pool := &WorkerPool{
 		wg: &sync.WaitGroup{},
 		mx: &sync.RWMutex{},
@@ -139,33 +74,39 @@ func New(c WorkerPoolConfig) *WorkerPool {
 		WaitQueueSize:  c.WaitQueueSize,
 		infoWriter:     c.InfoWriter,
 		Size:           c.InitialSize,
-
-		ctx:     ctx,
-		stopCtx: cancel,
+		openOnce:       sync.Once{},
+		isOpened:       false,
 	}
 	return pool
 }
 
 func (wp *WorkerPool) Open() {
-	for i := 0; i < wp.Size; i++ {
-		worker := &Worker{
-			ID:         uuid.New(),
-			tasks:      wp.tasksChan,
-			infoWriter: wp.infoWriter,
-			idChan:     wp.idChan,
-			stop:       wp.stopChan,
+	wp.openOnce.Do(func() {
+		for i := 0; i < wp.Size; i++ {
+			worker := &Worker{
+				id:         uuid.New(),
+				tasks:      wp.tasksChan,
+				infoWriter: wp.infoWriter,
+				idChan:     wp.idChan,
+				stop:       wp.stopChan,
+			}
+			wp.innerPool[worker.id] = worker
+			worker.isActive.Store(true)
+			wp.wg.Add(1)
+			worker.Start(wp.wg)
 		}
-		wp.innerPool[worker.ID] = worker
-		worker.isActive.Store(true)
-		wp.wg.Add(1)
-		worker.Start(wp.wg)
-	}
-	log.Println("Workerpool started")
+		wp.isOpened = true
+		log.Println("Workerpool started")
+
+	})
 
 }
 
 // Close all goroutines which was added
 func (wp *WorkerPool) Close(ctx context.Context) error {
+	if !wp.isOpened {
+		return ErrorAlreadyClosed
+	}
 	close(wp.stopChan)
 	done := make(chan struct{})
 	go func() {
@@ -175,7 +116,7 @@ func (wp *WorkerPool) Close(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("error occured during pool closing: %w", ctx.Err())
+		return ErrorOnClosing
 	case <-done:
 		// fmt.Println("pool closed ?")W
 	}
@@ -183,7 +124,12 @@ func (wp *WorkerPool) Close(ctx context.Context) error {
 	if wp.infoWriter != nil {
 		wp.infoWriter.Write([]byte("Pool was closed"))
 	}
+	wp.isOpened = false
 	return nil
+}
+
+func (wp *WorkerPool) IsOpened() bool {
+	return wp.isOpened
 }
 
 // Adds provided number of workers to pool
@@ -206,12 +152,12 @@ func (wp *WorkerPool) AddWorkers(number int) {
 	var worker *Worker
 	for i := 0; i < number; i++ {
 		worker = &Worker{
-			ID:         uuid.New(),
+			id:         uuid.New(),
 			tasks:      wp.tasksChan,
 			infoWriter: wp.infoWriter,
 			idChan:     wp.idChan,
 			stop:       wp.stopChan}
-		wp.innerPool[worker.ID] = worker
+		wp.innerPool[worker.id] = worker
 		log.Println("New worker added")
 
 		wp.wg.Add(1)
@@ -238,7 +184,7 @@ func (wp *WorkerPool) DeleteWorker(ctx context.Context) error {
 
 			return nil
 		case <-ctx.Done():
-			return fmt.Errorf("error occured during worker stop: %w", ctx.Err())
+			return ErrorOnWorkerStop
 		}
 	}
 }
@@ -259,7 +205,7 @@ func (wp *WorkerPool) Execute(job func() error, ctx context.Context) (<-chan err
 			return errorChan, nil
 		case <-ctx.Done():
 			close(errorChan)
-			return nil, errors.New("can not execute task because all workers are busy")
+			return nil, ErrorAllWorkersAreBusy
 		default:
 			log.Println("Wait queue is full, waiting for free workers")
 			time.Sleep(1 * time.Second)
@@ -268,12 +214,11 @@ func (wp *WorkerPool) Execute(job func() error, ctx context.Context) (<-chan err
 
 }
 
-// сделать другой метод, так как все равно выведет все воркеры, даже если они считаются остановленными
 func (wp *WorkerPool) GetWorkersInfo() []WorkerInfo {
 	info := make([]WorkerInfo, 0, wp.Size)
 	wp.mx.RLock()
 	for _, wk := range wp.innerPool {
-		info = append(info, WorkerInfo{ID: wk.ID, Active: wk.isActive.Load()})
+		info = append(info, WorkerInfo{ID: wk.id, Active: wk.isActive.Load()})
 	}
 	wp.mx.RUnlock()
 	return info
