@@ -45,14 +45,6 @@ type Task struct {
 	taskFunc  func() error
 }
 
-// func (w *Worker) getState() bool {
-// 	return w.isActive.Load()
-// }
-
-// func (w *Worker) setState(newState bool) {
-// 	w.isActive.Store(newState)
-// }
-
 // Worker
 func (w *Worker) Start(wg *sync.WaitGroup) {
 	go func() {
@@ -74,7 +66,7 @@ func (w *Worker) Start(wg *sync.WaitGroup) {
 			case _, ok := <-w.stop:
 				w.isActive.Store(false)
 				if !ok {
-					w.sendMessage(fmt.Sprintf("Worker %v closed by worker pool closingn\n", w.ID))
+					w.sendMessage(fmt.Sprintf("Worker %v closed by worker pool closing\n", w.ID))
 					return
 				}
 				w.sendMessage(fmt.Sprintf("Worker %v closed by deleting workern\n", w.ID))
@@ -99,7 +91,7 @@ type WorkerPool struct {
 	stopedWorkers []uuid.UUID
 
 	WaitQueueSize  int // размер буфера канала
-	size           int
+	Size           int
 	MaxIdleWorkers int
 
 	ctx       context.Context
@@ -146,7 +138,7 @@ func New(c WorkerPoolConfig) *WorkerPool {
 		MaxIdleWorkers: c.MaxIdleWorkers,
 		WaitQueueSize:  c.WaitQueueSize,
 		infoWriter:     c.InfoWriter,
-		size:           c.InitialSize,
+		Size:           c.InitialSize,
 
 		ctx:     ctx,
 		stopCtx: cancel,
@@ -154,12 +146,8 @@ func New(c WorkerPoolConfig) *WorkerPool {
 	return pool
 }
 
-func (wp *WorkerPool) Size() int {
-	return len(wp.innerPool) - len(wp.stopedWorkers)
-}
-
 func (wp *WorkerPool) Open() {
-	for i := 0; i < wp.size; i++ {
+	for i := 0; i < wp.Size; i++ {
 		worker := &Worker{
 			ID:         uuid.New(),
 			tasks:      wp.tasksChan,
@@ -199,18 +187,6 @@ func (wp *WorkerPool) Close(ctx context.Context) error {
 	return nil
 }
 
-// Get idle worker from stoped queue
-// func (wp *WorkerPool) reuseWorker(number int) []uuid.UUID {
-// 	reusableId := make([]uuid.UUID, 0, number)
-// 	for len(wp.stopedWorkers) > 0 && number > 0 {
-// 		number--
-// 		idleWorkerID := wp.stopedWorkers[len(wp.stopedWorkers)-1]
-// 		wp.stopedWorkers = wp.stopedWorkers[:len(wp.stopedWorkers)-1]
-// 		reusableId = append(reusableId, idleWorkerID)
-// 	}
-// 	return reusableId
-// }
-
 // Adds provided number of workers to pool
 // TODO: refactor
 func (wp *WorkerPool) AddWorkers(number int) {
@@ -220,6 +196,7 @@ func (wp *WorkerPool) AddWorkers(number int) {
 	wp.stopedWorkers = wp.stopedWorkers[:len(reused)]
 	number -= len(reused)
 	for _, wrk := range reused {
+		log.Println("reused worker started")
 		wp.innerPool[wrk].Start(wp.wg)
 	}
 	var worker *Worker
@@ -231,24 +208,28 @@ func (wp *WorkerPool) AddWorkers(number int) {
 			idChan:     wp.idChan,
 			stop:       wp.stopChan}
 		wp.innerPool[worker.ID] = worker
+		log.Println("new worker added")
 		worker.Start(wp.wg)
 	}
-	wp.size += number
+	wp.Size += number
 }
 
+// Deletes random free worker
 func (wp *WorkerPool) DeleteWorker(ctx context.Context) error {
 	for {
 		select {
 		case wp.stopChan <- struct{}{}:
 			id := <-wp.idChan
+
 			wp.mx.Lock()
 			if len(wp.stopedWorkers) == wp.MaxIdleWorkers {
 				delete(wp.innerPool, id)
 			} else {
 				wp.stopedWorkers = append(wp.stopedWorkers, id)
 			}
-			wp.size--
+			wp.Size--
 			wp.mx.Unlock()
+
 			return nil
 		case <-ctx.Done():
 			return fmt.Errorf("error occured during worker stop: %w", ctx.Err())
@@ -274,19 +255,19 @@ func (wp *WorkerPool) Execute(job func() error, ctx context.Context) (<-chan err
 			close(errorChan)
 			return nil, errors.New("can not execute task because all workers are busy")
 		default:
-			log.Println("Wait")
-			time.Sleep(5 * time.Second)
+			log.Println("Wait queue is full, waiting for free workers")
+			time.Sleep(1 * time.Second)
 		}
 	}
 
 }
 
 func (wp *WorkerPool) GetWorkersInfo() []WorkerInfo {
-	info := make([]WorkerInfo, 0, wp.Size())
+	info := make([]WorkerInfo, 0, wp.Size)
 	wp.mx.RLock()
 	for _, wk := range wp.innerPool {
 		info = append(info, WorkerInfo{ID: wk.ID, Active: wk.isActive.Load()})
 	}
-	wp.mx.Unlock()
+	wp.mx.RUnlock()
 	return info
 }
