@@ -22,7 +22,7 @@ func TestDefault(t *testing.T) {
 	if _, err := pool.Execute(utils.Ticker, ctx); err != nil {
 		fmt.Println(err)
 	}
-	if _, err := pool.Execute(utils.Closure(4), ctx); err != nil {
+	if _, err := pool.Execute(utils.Closure(4, 1), ctx); err != nil {
 		fmt.Println(err)
 	}
 
@@ -41,13 +41,13 @@ func TestWith(t *testing.T) {
 	ctx, closeTimeOut := context.WithTimeout(context.Background(), 10*time.Second)
 
 	defer closeTimeOut()
-	if _, err := pool.Execute(utils.TickerWithVarStopTime(10), ctx); err != nil {
+	if _, err := pool.Execute(utils.Closure(-1, 1), ctx); err != nil {
 		fmt.Println(err)
 	}
 
 	pool.AddWorkers(1)
 	assert.Equal(t, 2, pool.Size)
-	if _, err := pool.Execute(utils.Closure(4), ctx); err != nil {
+	if _, err := pool.Execute(utils.Closure(4, 2), ctx); err != nil {
 		fmt.Println(err)
 	}
 	workersInfo := pool.GetWorkersInfo()
@@ -58,4 +58,11 @@ func TestWith(t *testing.T) {
 
 	// time.Sleep(10 * time.Second)
 	pool.Close(ctx)
+
+	workersInfo = pool.GetWorkersInfo()
+	assert.Equal(t, 2, len(workersInfo))
+	for _, wki := range workersInfo {
+		assert.Equal(t, wki.Active, false)
+	}
+
 }

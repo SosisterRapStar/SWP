@@ -23,10 +23,10 @@ func Ticker() error {
 	}
 }
 
-func TickerWithVarStopTime(stopDur int) func() error {
+func TickerWithVarStopTime(stopDur int, id int) func() error {
 
 	return func() error {
-		taskId := 1
+		taskId := id
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 
@@ -45,10 +45,10 @@ func TickerWithVarStopTime(stopDur int) func() error {
 
 }
 
-func Closure(start int) func() error {
+func Closure(start int, id int) func() error {
 
 	return func() error {
-		taskId := 2
+		taskId := id
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 

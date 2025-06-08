@@ -66,10 +66,10 @@ func (w *Worker) Start(wg *sync.WaitGroup) {
 			case _, ok := <-w.stop:
 				w.isActive.Store(false)
 				if !ok {
-					w.sendMessage(fmt.Sprintf("Worker %v closed by worker pool closing\n", w.ID))
+					w.sendMessage(fmt.Sprintf("Worker %v closed by worker pool\n", w.ID))
 					return
 				}
-				w.sendMessage(fmt.Sprintf("Worker %v closed by deleting workern\n", w.ID))
+				w.sendMessage(fmt.Sprintf("Worker %v closed by deleting worker\n", w.ID))
 				w.idChan <- w.ID
 				return
 			}
@@ -175,10 +175,9 @@ func (wp *WorkerPool) Close(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		// fmt.Println("pool closed ?")
 		return fmt.Errorf("error occured during pool closing: %w", ctx.Err())
 	case <-done:
-		// fmt.Println("pool closed ?")
+		// fmt.Println("pool closed ?")W
 	}
 	close(wp.tasksChan)
 	if wp.infoWriter != nil {
@@ -197,6 +196,8 @@ func (wp *WorkerPool) AddWorkers(number int) {
 	number -= len(reused)
 	for _, wrk := range reused {
 		log.Println("reused worker started")
+
+		wp.wg.Add(1)
 		wp.innerPool[wrk].Start(wp.wg)
 	}
 	var worker *Worker
@@ -209,6 +210,8 @@ func (wp *WorkerPool) AddWorkers(number int) {
 			stop:       wp.stopChan}
 		wp.innerPool[worker.ID] = worker
 		log.Println("new worker added")
+
+		wp.wg.Add(1)
 		worker.Start(wp.wg)
 	}
 	wp.Size += number
@@ -262,6 +265,7 @@ func (wp *WorkerPool) Execute(job func() error, ctx context.Context) (<-chan err
 
 }
 
+// сделать другой метод, так как все равно выведет все воркеры, даже если они считаются остановленными
 func (wp *WorkerPool) GetWorkersInfo() []WorkerInfo {
 	info := make([]WorkerInfo, 0, wp.Size)
 	wp.mx.RLock()
