@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -35,14 +36,27 @@ func DefaultConfig() WorkerPoolConfig {
 	}
 }
 
-// func validator(c *WorkerPoolConfig) error {
-// 	if c.MaxIdleWorkers < 0 {
-// 		return ErrorConfigValidation
-// 	}
-// 	if c.InitialSize < 0 {
-
-// 	}
-// }
+func validate(c *WorkerPoolConfig) error {
+	if c.MaxIdleWorkers < 0 {
+		return ErrorNegativeMaxIdle
+	}
+	if c.InitialSize < 0 {
+		return ErrorNegativeInitialSize
+	}
+	if c.WaitQueueSize < 0 {
+		return ErrorNegativeWaitQueue
+	}
+	if c.InitialSize == 0 {
+		return ErrorZeroInitialSize
+	}
+	if c.MaxIdleWorkers > c.InitialSize {
+		return errors.New("max idle workers cannot exceed initial size")
+	}
+	if c.InfoWriter == nil {
+		c.InfoWriter = os.Stderr
+	}
+	return nil
+}
 
 type WorkerPool struct {
 	wg *sync.WaitGroup
@@ -64,18 +78,11 @@ type WorkerPool struct {
 	isOpened   bool
 }
 
-func New(c WorkerPoolConfig) *WorkerPool {
+func New(c WorkerPoolConfig) (*WorkerPool, error) {
 
-	// TODO: add checks
-	// if c.MaxIdleWorkers == nil {
-	// 	c.MaxIdleWorkers = defaultIdleWorkersNumber
-	// }
-	// if c.InitialSize == nil {
-	// 	c.InitialSize = defaultInitSize
-	// }
-	// if c.WaitQueueSize == nil {
-	// 	c.WaitQueueSize = defaultWaitQueueSize
-	// }
+	if err := validate(&c); err != nil {
+		return nil, err
+	}
 
 	pool := &WorkerPool{
 		wg: &sync.WaitGroup{},
@@ -94,7 +101,7 @@ func New(c WorkerPoolConfig) *WorkerPool {
 		openOnce:       sync.Once{},
 		isOpened:       false,
 	}
-	return pool
+	return pool, nil
 }
 
 func (wp *WorkerPool) Open() {

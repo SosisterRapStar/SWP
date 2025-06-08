@@ -3,9 +3,13 @@ package pool
 import "errors"
 
 var (
-	ErrorAlreadyClosed     = errors.New("pool already closed")
-	ErrorOnClosing         = errors.New("error occured closing pool")
-	ErrorAllWorkersAreBusy = errors.New("can not execute task because all workers are busy")
-	ErrorOnWorkerStop      = errors.New("error occured during worker stop")
-	ErrorConfigValidation  = errors.New("config validation error")
+	ErrorConfigValidation    = errors.New("invalid worker pool configuration")
+	ErrorNegativeMaxIdle     = errors.New("max idle workers cannot be negative")
+	ErrorNegativeInitialSize = errors.New("initial size cannot be negative")
+	ErrorNegativeWaitQueue   = errors.New("wait queue size cannot be negative")
+	ErrorZeroInitialSize     = errors.New("initial size cannot be zero when starting pool")
+	ErrorAllWorkersAreBusy   = errors.New("all workers are busy")
+	ErrorOnWorkerStop        = errors.New("failed to stop worker")
+	ErrorAlreadyClosed       = errors.New("worker pool is already closed")
+	ErrorOnClosing           = errors.New("timeout or cancellation during pool closing")
 )
