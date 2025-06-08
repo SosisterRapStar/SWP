@@ -21,9 +21,9 @@ var (
 		InfoWriter:     os.Stderr,
 	}
 
-	NoWaitQueue = pool.WorkerPoolConfig{
+	NoWaitQueueNoIdleWorkers = pool.WorkerPoolConfig{
 		MaxIdleWorkers: 0,
-		InitialSize:    10,
+		InitialSize:    3,
 		WaitQueueSize:  0,
 		InfoWriter:     os.Stderr,
 	}
@@ -34,11 +34,24 @@ var (
 		WaitQueueSize:  0,
 		InfoWriter:     os.Stderr,
 	}
+	OneIdleWorker = pool.WorkerPoolConfig{
+		MaxIdleWorkers: 1,
+		InitialSize:    3,
+		WaitQueueSize:  1, // будет ждать пока не реюзнется воркер
+		InfoWriter:     os.Stderr,
+	}
 
-	ZeroConfig = pool.WorkerPoolConfig{
+	TwoIdleWorker = pool.WorkerPoolConfig{
+		MaxIdleWorkers: 2,
+		InitialSize:    3,
+		WaitQueueSize:  1, // будет ждать пока не реюзнется воркер
+		InfoWriter:     os.Stderr,
+	}
+
+	ZeroWorkersOnlyQueue = pool.WorkerPoolConfig{
 		MaxIdleWorkers: 0,
-		InitialSize:    1,
-		WaitQueueSize:  0,
+		InitialSize:    0,
+		WaitQueueSize:  10,
 		InfoWriter:     os.Stderr,
 	}
 )

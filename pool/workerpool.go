@@ -191,14 +191,17 @@ func (wp *WorkerPool) Close(ctx context.Context) error {
 func (wp *WorkerPool) AddWorkers(number int) {
 	wp.mx.Lock()
 	defer wp.mx.Unlock()
+	log.Printf("stoped workers %v", wp.stopedWorkers)
 	reused := wp.stopedWorkers[:min(number, len(wp.stopedWorkers))]
-	wp.stopedWorkers = wp.stopedWorkers[:len(reused)]
+	log.Printf("workers added to reuse %v", reused)
+	wp.stopedWorkers = wp.stopedWorkers[len(reused):]
+	log.Printf("stop workers after reuse %v", wp.stopedWorkers)
 	number -= len(reused)
-	for _, wrk := range reused {
-		log.Println("reused worker started")
-
+	for _, id := range reused {
+		wp.Size++
+		log.Println("Reused worker started")
 		wp.wg.Add(1)
-		wp.innerPool[wrk].Start(wp.wg)
+		wp.innerPool[id].Start(wp.wg)
 	}
 	var worker *Worker
 	for i := 0; i < number; i++ {
@@ -209,12 +212,12 @@ func (wp *WorkerPool) AddWorkers(number int) {
 			idChan:     wp.idChan,
 			stop:       wp.stopChan}
 		wp.innerPool[worker.ID] = worker
-		log.Println("new worker added")
+		log.Println("New worker added")
 
 		wp.wg.Add(1)
 		worker.Start(wp.wg)
+		wp.Size++
 	}
-	wp.Size += number
 }
 
 // Deletes random free worker
@@ -252,7 +255,7 @@ func (wp *WorkerPool) Execute(job func() error, ctx context.Context) (<-chan err
 	for {
 		select {
 		case wp.tasksChan <- Task{taskFunc: job, errorChan: errorChan}:
-			log.Println("task was sent")
+			log.Println("Task was planned")
 			return errorChan, nil
 		case <-ctx.Done():
 			close(errorChan)

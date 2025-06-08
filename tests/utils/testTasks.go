@@ -6,7 +6,7 @@ import (
 )
 
 func Ticker() error {
-	taskId := 1
+	taskId := 12
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
