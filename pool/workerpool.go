@@ -20,15 +20,15 @@ const (
 	DefaultAdditionalSpaceForInnerPool = 15
 )
 
-type WorkerPoolConfig struct {
+type Config struct {
 	MaxIdleWorkers int
 	InitialSize    int
 	WaitQueueSize  int
 	InfoWriter     io.Writer
 }
 
-func DefaultConfig() WorkerPoolConfig {
-	return WorkerPoolConfig{
+func DefaultConfig() Config {
+	return Config{
 		MaxIdleWorkers: DefaultIdleWorkersNumber,
 		InitialSize:    DefaultInitSize,
 		WaitQueueSize:  DefaultWaitQueueSize,
@@ -36,7 +36,7 @@ func DefaultConfig() WorkerPoolConfig {
 	}
 }
 
-func validate(c *WorkerPoolConfig) error {
+func validate(c *Config) error {
 	if c.MaxIdleWorkers < 0 {
 		return ErrorNegativeMaxIdle
 	}
@@ -78,7 +78,7 @@ type WorkerPool struct {
 	isOpened   bool
 }
 
-func New(c WorkerPoolConfig) (*WorkerPool, error) {
+func New(c Config) (*WorkerPool, error) {
 
 	if err := validate(&c); err != nil {
 		return nil, err
@@ -120,11 +120,17 @@ func (wp *WorkerPool) Open() {
 			worker.Start(wp.wg)
 		}
 		wp.isOpened = true
-		log.Println("Workerpool started")
+		// log.Println("Workerpool started")
 
 	})
 
 }
+
+// func (wp *WorkerPool) log(s string) {
+// 	if wp.infoWriter != nil {
+// 		wp.infoWriter.Write([]byte(s))
+// 	}
+// }
 
 // Close all goroutines which was added
 func (wp *WorkerPool) Close(ctx context.Context) error {
@@ -146,7 +152,7 @@ func (wp *WorkerPool) Close(ctx context.Context) error {
 	}
 	close(wp.tasksChan)
 	if wp.infoWriter != nil {
-		wp.infoWriter.Write([]byte("Pool was closed"))
+		// wp.log("Pool was closed")
 	}
 	wp.isOpened = false
 	return nil
@@ -161,11 +167,11 @@ func (wp *WorkerPool) IsOpened() bool {
 func (wp *WorkerPool) AddWorkers(number int) {
 	wp.mx.Lock()
 	defer wp.mx.Unlock()
-	log.Printf("stoped workers %v", wp.stopedWorkers)
+	// log.Printf("stoped workers %v", wp.stopedWorkers)
 	reused := wp.stopedWorkers[:min(number, len(wp.stopedWorkers))]
-	log.Printf("workers added to reuse %v", reused)
+	// log.Printf("workers added to reuse %v", reused)
 	wp.stopedWorkers = wp.stopedWorkers[len(reused):]
-	log.Printf("stop workers after reuse %v", wp.stopedWorkers)
+	// log.Printf("stop workers after reuse %v", wp.stopedWorkers)
 	number -= len(reused)
 	for _, id := range reused {
 		wp.Size++
@@ -182,7 +188,7 @@ func (wp *WorkerPool) AddWorkers(number int) {
 			idChan:     wp.idChan,
 			stop:       wp.stopChan}
 		wp.innerPool[worker.id] = worker
-		log.Println("New worker added")
+		// log.Println("New worker added")
 
 		wp.wg.Add(1)
 		worker.Start(wp.wg)
@@ -225,13 +231,13 @@ func (wp *WorkerPool) Execute(job func() error, ctx context.Context) (<-chan err
 	for {
 		select {
 		case wp.tasksChan <- Task{taskFunc: job, errorChan: errorChan}:
-			log.Println("Task was planned")
+			// log.Println("Task was planned")
 			return errorChan, nil
 		case <-ctx.Done():
 			close(errorChan)
 			return nil, ErrorAllWorkersAreBusy
 		default:
-			log.Println("Wait queue is full, waiting for free workers")
+			// log.Println("Wait queue is full, waiting for free workers")
 			time.Sleep(1 * time.Second)
 		}
 	}
