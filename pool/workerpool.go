@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"sync"
 	"time"
@@ -124,7 +123,7 @@ func (wp *WorkerPool) Open() {
 			worker.Start(wp.wg)
 		}
 		wp.isOpened = true
-		log.Println("Workerpool started")
+		// log.Println("Workerpool started")
 
 	})
 
@@ -152,7 +151,7 @@ func (wp *WorkerPool) Close(ctx context.Context) error {
 	case <-ctx.Done():
 		return ErrorOnClosing
 	case <-done:
-		log.Println("pool closed ?")
+		// log.Println("pool closed ?")
 	}
 	close(wp.tasksChan)
 	if wp.infoWriter != nil {
@@ -175,15 +174,15 @@ func (wp *WorkerPool) AddWorkers(number int) error {
 
 	wp.mx.Lock()
 	defer wp.mx.Unlock()
-	log.Printf("stoped workers %v", wp.stopedWorkers)
+	// log.Printf("stoped workers %v", wp.stopedWorkers)
 	reused := wp.stopedWorkers[:min(number, len(wp.stopedWorkers))]
-	log.Printf("workers added to reuse %v", reused)
+	// log.Printf("workers added to reuse %v", reused)
 	wp.stopedWorkers = wp.stopedWorkers[len(reused):]
-	log.Printf("stop workers after reuse %v", wp.stopedWorkers)
+	// log.Printf("stop workers after reuse %v", wp.stopedWorkers)
 	number -= len(reused)
 	for _, id := range reused {
 		wp.Size++
-		log.Println("Reused worker started")
+		// log.Println("Reused worker started")
 		wp.wg.Add(1)
 		wp.innerPool[id].Start(wp.wg)
 	}
@@ -196,7 +195,7 @@ func (wp *WorkerPool) AddWorkers(number int) error {
 			idChan:     wp.idChan,
 			stop:       wp.stopChan}
 		wp.innerPool[worker.id] = worker
-		log.Println("New worker added")
+		// log.Println("New worker added")
 
 		wp.wg.Add(1)
 		worker.Start(wp.wg)
@@ -238,9 +237,9 @@ func (wp *WorkerPool) Execute(job func() error, ctx context.Context) (<-chan err
 	if !wp.isOpened {
 		return nil, ErrorPoolClosed
 	}
-	log.Println("execute was started")
+	// log.Println("execute was started")
 	errorChan := make(chan error)
-	log.Println("execute was started")
+	// log.Println("execute was started")
 	for {
 		select {
 		case wp.tasksChan <- Task{taskFunc: job, errorChan: errorChan}:
