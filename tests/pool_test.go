@@ -10,13 +10,16 @@ import (
 	"github.com/SosisterRapStar/SWP/pool"
 	"github.com/SosisterRapStar/SWP/tests/utils"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 )
 
 func TestDefault(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	pool := pool.New(utils.DefaultConfig)
+	pool, err := pool.New(utils.DefaultConfig)
+	require.NoError(t, err)
+
 	pool.Open()
 	ctx, closeTimeOut := context.WithTimeout(context.Background(), 10*time.Second)
 	defer closeTimeOut()
@@ -35,7 +38,9 @@ func TestDefault(t *testing.T) {
 func TestAddingToPoolAndEmptyQueue(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	pool := pool.New(utils.OneWorker)
+	pool, err := pool.New(utils.OneWorker)
+	require.NoError(t, err)
+
 	pool.Open()
 	assert.Equal(t, 1, pool.Size)
 	ctx, closeTimeOut := context.WithTimeout(context.Background(), 10*time.Second)
@@ -69,8 +74,10 @@ func TestAddingToPoolAndEmptyQueue(t *testing.T) {
 func TestQueue(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	pool := pool.New(utils.ZeroWorkersOnlyQueue)
-	assert.Equal(t, 0, pool.Size)
+	pool, err := pool.New(utils.ZeroWorkersOnlyQueue)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, pool.Size)
 	pool.Open()
 
 	tasks := make([]func() error, 5)
@@ -97,7 +104,9 @@ func TestQueue(t *testing.T) {
 func TestWithoutWaitQueue(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	pool := pool.New(utils.NoWaitQueueNoIdleWorkers)
+	pool, err := pool.New(utils.NoWaitQueueNoIdleWorkers)
+	require.NoError(t, err)
+
 	assert.Equal(t, 3, pool.Size)
 	pool.Open()
 
@@ -125,7 +134,9 @@ func TestWithoutWaitQueue(t *testing.T) {
 
 // TODO: change test architecture for configs as test can not know about how many workers in config
 func TestDeleteWorker(t *testing.T) {
-	pool := pool.New(utils.NoWaitQueueNoIdleWorkers)
+	pool, err := pool.New(utils.NoWaitQueueNoIdleWorkers)
+	require.NoError(t, err)
+
 	defer goleak.VerifyNone(t)
 	defer func() {
 		closeCtx, closeCloseCtx := context.WithTimeout(context.Background(), 10*time.Second)
@@ -158,7 +169,9 @@ func TestDeleteWorker(t *testing.T) {
 }
 
 func TestIdleWorkers(t *testing.T) {
-	pool := pool.New(utils.OneIdleWorker)
+	pool, err := pool.New(utils.OneIdleWorker)
+	require.NoError(t, err)
+
 	defer goleak.VerifyNone(t)
 	defer func() {
 		closeCtx, closeCloseCtx := context.WithTimeout(context.Background(), 10*time.Second)
@@ -197,7 +210,9 @@ func TestIdleWorkers(t *testing.T) {
 }
 
 func TestReuseIdleWorkers(t *testing.T) {
-	pool := pool.New(utils.OneIdleWorker)
+	pool, err := pool.New(utils.OneIdleWorker)
+	require.NoError(t, err)
+
 	defer goleak.VerifyNone(t)
 	defer func() {
 		closeCtx, closeCloseCtx := context.WithTimeout(context.Background(), 10*time.Second)
@@ -257,7 +272,9 @@ func TestReuseIdleWorkers(t *testing.T) {
 }
 
 func TestSeveralReuseIdleWorkers(t *testing.T) {
-	pool := pool.New(utils.TwoIdleWorker)
+	pool, err := pool.New(utils.TwoIdleWorker)
+	require.NoError(t, err)
+
 	defer goleak.VerifyNone(t)
 	defer func() {
 		closeCtx, closeCloseCtx := context.WithTimeout(context.Background(), 10*time.Second)

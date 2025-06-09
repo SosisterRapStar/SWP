@@ -54,11 +54,14 @@ func testTaskClosure(start int) func() error {
 func main() {
 	// writer := bufio.NewWriter(bufio.NewWriter())
 	// defer writer.Flush()
-	pool := pool.New(pool.WorkerPoolConfig{
+	pool, err := pool.New(pool.Config{
 		MaxIdleWorkers: 10,
 		InitialSize:    10,
 		WaitQueueSize:  10,
 		InfoWriter:     os.Stderr})
+	if err != nil {
+		fmt.Println(err.Error())
+	}
 	pool.Open()
 	ctx, closeTimeOut := context.WithTimeout(context.Background(), 10*time.Second)
 	defer closeTimeOut()
